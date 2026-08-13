@@ -1,0 +1,145 @@
+"""Anima 28 层 LoRA 到 40 层模型的键名重映射核心。
+
+映射规范与 ComfyUI-Anima-28to40-Lora-Stack 一致
+(https://github.com/hpoc766-afk/ComfyUI-Anima-28to40-Lora-Stack)：
+40 层模型在位置 (2, 5, 8, 11, 14, 17, 21, 24, 27, 30, 33, 36) 插入 12 个新层，
+原 28 个主干层按顺序填入其余位置；插入层不复制任何 LoRA 权重。
+
+示例映射：0→0、2→3、14→20、27→39。
+本模块只处理内存中的 state dict，不负责读写文件。
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from typing import Any
+
+OLD_BLOCK_COUNT = 28
+NEW_BLOCK_COUNT = 40
+INSERTION_POSITIONS = (2, 5, 8, 11, 14, 17, 21, 24, 27, 30, 33, 36)
+
+
+def build_old_to_new_map(
+    old_block_count: int = OLD_BLOCK_COUNT,
+    new_block_count: int = NEW_BLOCK_COUNT,
+    insertion_positions: tuple[int, ...] = INSERTION_POSITIONS,
+) -> dict[int, int]:
+    """根据插入层位置生成旧层索引到新层索引的一一映射。"""
+    insertions = set(insertion_positions)
+    if len(insertions) != new_block_count - old_block_count:
+        raise ValueError("插入层数量与新旧层数差值不一致")
+    if any(index < 0 or index >= new_block_count for index in insertions):
+        raise ValueError("插入层位置超出新模型层范围")
+
+    old_to_new: dict[int, int] = {}
+    old_index = 0
+    for new_index in range(new_block_count):
+        if new_index in insertions:
+            continue
+        if old_index >= old_block_count:
+            raise ValueError("生成映射时旧层数量溢出")
+        old_to_new[old_index] = new_index
+        old_index += 1
+
+    if old_index != old_block_count:
+        raise ValueError(f"仅映射了 {old_index} 个旧层，预期 {old_block_count} 个")
+    return old_to_new
+
+
+OLD_TO_NEW = build_old_to_new_map()
+
+# 仅识别 Anima 主干层，避免误把 llm_adapter_blocks_* 当成主模型层。
+BLOCK_PATTERNS = (
+    re.compile(r"(?P<prefix>lora_unet_blocks_)(?P<idx>\d+)(?P<suffix>_)"),
+    re.compile(r"(?P<prefix>(?:^|[./])net[./]blocks[./])(?P<idx>\d+)(?P<suffix>[./])"),
+    re.compile(r"(?P<prefix>(?:^|[./])diffusion_model[./]blocks[./])(?P<idx>\d+)(?P<suffix>[./])"),
+)
+
+
+class LoraRemapError(ValueError):
+    """LoRA 结构不符合 Anima 28 层映射要求。"""
+
+
+def find_main_block(key: str) -> tuple[re.Match[str] | None, int | None]:
+    """返回键中第一个 Anima 主干层匹配及其索引。"""
+    for pattern in BLOCK_PATTERNS:
+        match = pattern.search(key)
+        if match is not None:
+            return match, int(match.group("idx"))
+    return None, None
+
+
+def remap_key(
+    key: str,
+    old_to_new: Mapping[int, int] = OLD_TO_NEW,
+) -> tuple[str, int | None, int | None]:
+    """重映射单个键；无主干层索引的键保持原样。"""
+    match, old_index = find_main_block(key)
+    if match is None or old_index is None:
+        return key, None, None
+    if old_index not in old_to_new:
+        hint = "；该文件可能已经是 40 层结构或不是 28 层 Anima LoRA" if old_index >= OLD_BLOCK_COUNT else ""
+        raise LoraRemapError(
+            f"键 {key!r} 使用了不支持的主干层 {old_index}；仅支持 0-{OLD_BLOCK_COUNT - 1}{hint}"
+        )
+
+    new_index = old_to_new[old_index]
+    new_key = f"{key[:match.start('idx')]}{new_index}{key[match.end('idx'):]}"
+    return new_key, old_index, new_index
+
+
+def remap_lora_state_dict(
+    state_dict: Mapping[str, Any],
+    *,
+    source_name: str = "<memory>",
+    old_to_new: Mapping[int, int] = OLD_TO_NEW,
+) -> dict[str, Any]:
+    """严格校验并返回适用于 40 层模型的 LoRA state dict。
+
+    张量对象仅被重新引用，不执行 clone，也不生成新增 12 层的权重。
+    """
+    remapped: dict[str, Any] = {}
+    main_block_key_count = 0
+    collisions: list[str] = []
+
+    for key, value in state_dict.items():
+        try:
+            new_key, old_index, _ = remap_key(key, old_to_new)
+        except LoraRemapError as error:
+            raise LoraRemapError(f"LoRA {source_name}: {error}") from error
+
+        if old_index is not None:
+            main_block_key_count += 1
+        if new_key in remapped:
+            collisions.append(new_key)
+            continue
+        remapped[new_key] = value
+
+    if main_block_key_count == 0:
+        raise LoraRemapError(
+            f"LoRA {source_name} 未包含可识别的 Anima 主干 blocks_0 至 blocks_27 权重；"
+            "支持的键名前缀：lora_unet_blocks_*、net.blocks.*、diffusion_model.blocks.*"
+        )
+    if collisions:
+        preview = "\n  ".join(collisions[:20])
+        suffix = "" if len(collisions) <= 20 else f"\n  ...另有 {len(collisions) - 20} 个"
+        raise LoraRemapError(
+            f"LoRA {source_name} 映射后发生键名冲突：\n  {preview}{suffix}"
+        )
+
+    return remapped
+
+
+__all__ = [
+    "BLOCK_PATTERNS",
+    "INSERTION_POSITIONS",
+    "LoraRemapError",
+    "NEW_BLOCK_COUNT",
+    "OLD_BLOCK_COUNT",
+    "OLD_TO_NEW",
+    "build_old_to_new_map",
+    "find_main_block",
+    "remap_key",
+    "remap_lora_state_dict",
+]
