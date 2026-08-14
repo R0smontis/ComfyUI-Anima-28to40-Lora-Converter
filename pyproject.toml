@@ -1,12 +1,18 @@
 [project]
-name = "comfyui-anima-28to40-lora-converter"
+name = "anima-28to40-lora-converter"
 description = "Batch convert Anima 28-layer LoRAs to 40-layer key structure and save them into ComfyUI's loras folder."
 version = "1.0.0"
-license = "MIT"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 readme = "README.md"
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/R0smontis/ComfyUI-Anima-28to40-Lora-Converter"
 
 [tool.comfy]
 PublisherId = "R0smontis"
-DisplayName = "ComfyUI-Anima-28to40-Lora-Converter"
-Icon = ""
+DisplayName = "Anima 28→40 批量 LoRA 转换器"
+Icon = "https://raw.githubusercontent.com/R0smontis/ComfyUI-Anima-28to40-Lora-Converter/main/icon.svg"
