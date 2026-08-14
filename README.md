@@ -6,6 +6,10 @@
 
 ## 安装
 
+最简单的方式是在 ComfyUI-Manager 里搜索 `anima-28to40-lora-converter` 一键安装。
+
+也可以手动克隆：
+
 把仓库克隆到 `ComfyUI/custom_nodes`：
 
 ```bash
@@ -57,6 +61,9 @@ node --check web/anima_lora_converter.js
 Offline batch converter that remaps **28-layer Anima LoRA** keys to the **40-layer** structure and saves the converted `.safetensors` files into ComfyUI's `models/loras` folder. Same mapping spec as [ComfyUI-Anima-28to40-Lora-Stack](https://github.com/hpoc766-afk/ComfyUI-Anima-28to40-Lora-Stack) (insertion layers at 2, 5, 8, 11, 14, 17, 21, 24, 27, 30, 33, 36), but writes converted files instead of patching in memory.
 
 ## Install
+
+Easiest: search `anima-28to40-lora-converter` in ComfyUI-Manager. Or clone manually:
+
 
 ```bash
 cd ComfyUI/custom_nodes
